@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import os
 import re
 import shutil
 import threading
@@ -17,8 +18,20 @@ from ..slskd import SlskdClient
 
 logger = logging.getLogger(__name__)
 
-ORGANIZER_INTERVAL = 90
+ORGANIZER_INTERVAL = int(
+    os.getenv(
+        "ORGANIZER_INTERVAL_SECONDS",
+        "90",
+    )
+)
+
+# Barrido lento de seguridad cuando no
+# ha llegado ningún aviso de descargas
+# nuevas completadas.
+ORGANIZER_IDLE_INTERVAL = 900
 FIRST_RUN_DELAY = 30
+
+_wake = threading.Event()
 
 # Un fichero recién tocado no se toca: damos margen
 # por si slskd aún está escribiendo y la API no
@@ -420,10 +433,22 @@ def sweep_downloads() -> dict | None:
     return result
 
 
+def request_sweep():
+    # Aviso barato (evento): el monitor lo usa
+    # cuando detecta descargas recién completadas.
+    _wake.set()
+
+
 def _organizer_loop():
     time.sleep(FIRST_RUN_DELAY)
 
     while True:
+        woke = _wake.wait(
+            timeout=ORGANIZER_INTERVAL
+        )
+
+        _wake.clear()
+
         try:
             sweep_downloads()
 
@@ -433,7 +458,26 @@ def _organizer_loop():
                 "el organizador continúa"
             )
 
-        time.sleep(ORGANIZER_INTERVAL)
+        if woke:
+            continue
+
+        # Nadie avisó en el intervalo corto:
+        # descanso largo, pero despertable.
+        woke_long = _wake.wait(
+            timeout=ORGANIZER_IDLE_INTERVAL
+        )
+
+        _wake.clear()
+
+        if woke_long:
+            try:
+                sweep_downloads()
+
+            except Exception:
+                logger.exception(
+                    "[ORGANIZER LOOP ERROR] "
+                    "el organizador continúa"
+                )
 
 
 def start_organizer():

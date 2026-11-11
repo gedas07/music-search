@@ -43,6 +43,64 @@ INCOMPLETE_CLEANUP_INTERVAL = 60
 _last_incomplete_cleanup = 0.0
 
 
+_last_completed_files = set()
+
+
+def _notify_organizer_if_new_completions(
+    remote_by_id,
+):
+    # El monitor ya recibe la lista completa de
+    # transferencias en cada ciclo: comparar los
+    # completados no cuesta nada y nos permite
+    # despertar al organizador solo cuando toca.
+    global _last_completed_files
+
+    completed_now = set()
+
+    for remote_file in remote_by_id.values():
+        state = remote_file.get(
+            "state",
+            "",
+        ).casefold()
+
+        if any(
+            marker in state
+            for marker in (
+                "completed",
+                "succeeded",
+                "aborted",
+                "failed",
+                "rejected",
+                "errored",
+                "cancel",
+            )
+        ):
+            filename = remote_file.get(
+                "filename",
+                "",
+            )
+
+            normalized = filename.replace(
+                "\\",
+                "/",
+            )
+
+            completed_now.add(
+                Path(normalized).name.casefold()
+            )
+
+    fresh = completed_now - _last_completed_files
+
+    _last_completed_files = completed_now
+
+    if fresh:
+        from .services.organizer_service import (
+            request_sweep,
+        )
+
+        request_sweep()
+
+
 def find_downloaded_file(
     remote_filename,
 ):
@@ -1088,6 +1146,10 @@ def monitor():
                         remote_by_id[
                             remote_id
                         ] = remote_file
+
+        _notify_organizer_if_new_completions(
+            remote_by_id
+        )
 
         for job in jobs:
 

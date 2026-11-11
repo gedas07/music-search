@@ -29,3 +29,7 @@ class DuplicateDeleteRequest(BaseModel):
 class PruneRequest(BaseModel):
     name: str
     delete_if_empty: bool = False
+
+
+class PlaylistDeleteRequest(BaseModel):
+    name: str

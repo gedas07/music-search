@@ -47,12 +47,14 @@ from app.services.manual_playlist_service import (
 )
 from app.services.duplicates_service import (
     delete_paths,
+    delete_playlist,
     find_duplicates,
     playlist_orphans_report,
     prune_playlist,
 )
 from .api_models import (
     DuplicateDeleteRequest,
+    PlaylistDeleteRequest,
     PruneRequest,
 )
 
@@ -421,6 +423,15 @@ def post_playlist_prune(
     return prune_playlist(
         name=request.name,
         delete_if_empty=request.delete_if_empty,
+    )
+
+@app.post("/playlists/delete")
+def post_playlist_delete(
+    request: PlaylistDeleteRequest,
+):
+
+    return delete_playlist(
+        name=request.name,
     )
 
 @app.delete("/downloads/{job_id}")

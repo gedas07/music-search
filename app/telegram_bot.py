@@ -350,7 +350,6 @@ def _format_bytes(
 
 
 MAX_DUPLICATE_GROUPS_SHOWN = 15
-MAX_CLEANUP_PLAYLISTS_SHOWN = 15
 
 
 async def duplicates_command(
@@ -513,14 +512,14 @@ async def cleanup_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     await update.message.reply_text(
-        "🔎 Revisando tus playlists en busca de entradas muertas…"
+        "🔎 Revisando tus playlists…"
     )
 
     try:
         reports = await api_get(
             "/playlists/orphans",
             retries=1,
-            timeout=60,
+            timeout=120,
         )
 
     except Exception:
@@ -530,120 +529,331 @@ async def cleanup_command(
 
         return
 
-    problematic = [
-        report
-        for report in reports
-        if report.get("missing")
-    ]
-
-    if not problematic:
+    if not reports:
         await update.message.reply_text(
-            "✅ Todas tus playlists están sanas."
+            "No he encontrado ningún fichero de playlist (.m3u) en la biblioteca."
         )
 
         return
 
-    store = context.user_data.setdefault(
-        "cleanup_playlists",
-        {},
+    token = secrets.token_hex(4)
+
+    context.user_data["cleanup_playlists"] = {
+        token: {
+            "reports": reports,
+        },
+    }
+
+    await render_cleanup_page(
+        query=None,
+        update=update,
+        context=context,
+        token=token,
+        offset=0,
     )
 
-    for report in problematic[:MAX_CLEANUP_PLAYLISTS_SHOWN]:
-        token = secrets.token_hex(4)
-        store[token] = report
 
-        lines = [
-            f"🎵 {report['name']} — "
-            f"{report['missing']}/{report['total']} entradas sin fichero",
-        ]
+CLEANUP_PAGE_SIZE = 10
 
+
+def _cleanup_report_line(
+    report: dict,
+) -> str:
+
+    missing = report.get("missing", 0)
+    total = report.get("total", 0)
+
+    state = "✅" if missing == 0 else "⚠️"
+
+    return (
+        f"{state} {report['name']} · "
+        f"{total} temas"
+        + (f" · {missing} muertos" if missing else "")
+    )
+
+
+async def render_cleanup_page(
+    query,
+    update,
+    context,
+    token: str,
+    offset: int,
+):
+    state = context.user_data["cleanup_playlists"][token]
+    reports = state["reports"]
+
+    page = reports[offset:offset + CLEANUP_PAGE_SIZE]
+
+    lines = [
+        f"🗑 Gestión de playlists ({offset + 1}-"
+        f"{min(offset + CLEANUP_PAGE_SIZE, len(reports))} de {len(reports)})",
+        "Elige una para ver opciones:",
+    ]
+
+    keyboard = []
+
+    for index, report in enumerate(
+        reports,
+        start=offset,
+    ):
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    _cleanup_report_line(report)[:64],
+                    callback_data=f"cleanpl:{token}:item:{index}",
+                )
+            ]
+        )
+
+    navigation = []
+
+    if offset > 0:
+        navigation.append(
+            InlineKeyboardButton(
+                "⬅️ Anterior",
+                callback_data=f"cleanpl:{token}:page:{offset - CLEANUP_PAGE_SIZE}",
+            )
+        )
+
+    if offset + CLEANUP_PAGE_SIZE < len(reports):
+        navigation.append(
+            InlineKeyboardButton(
+                "Siguiente ➡️",
+                callback_data=f"cleanpl:{token}:page:{offset + CLEANUP_PAGE_SIZE}",
+            )
+        )
+
+    if navigation:
+        keyboard.append(navigation)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "\n".join(lines)
+
+    if query is not None:
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+        )
+
+    else:
+        await update.message.reply_text(
+            text,
+            reply_markup=reply_markup,
+        )
+
+
+async def render_cleanup_detail(
+    query,
+    context,
+    token: str,
+    index: int,
+):
+    state = context.user_data["cleanup_playlists"][token]
+    report = state["reports"][index]
+
+    missing = report.get("missing", 0)
+    total = report.get("total", 0)
+
+    lines = [
+        f"🎵 {report['name']}",
+        f"📁 {report['filename']}",
+        f"📊 {total} entradas · {missing} sin fichero",
+    ]
+
+    if missing:
         for name in report["missing_names"][:8]:
             lines.append(f"   ❌ {name}")
 
         if report["missing_names"][8:]:
             lines.append(f"   …y {len(report['missing_names']) - 8} más")
 
-        buttons = [
+    keyboard = []
+
+    if missing:
+        keyboard.append(
             [
                 InlineKeyboardButton(
                     "🧹 Quitar entradas muertas",
-                    callback_data=f"cleanpl:{token}:prune",
+                    callback_data=f"cleanpl:{token}:prune:{index}",
                 )
             ]
-        ]
+        )
 
-        if report["total"] > 0 and report["missing"] == report["total"]:
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        "🗑 Borrar la playlist entera",
-                        callback_data=f"cleanpl:{token}:delete",
-                    )
-                ]
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "🗑 Borrar la playlist (las canciones NO se borran)",
+                callback_data=f"cleanpl:{token}:delconfirm:{index}",
             )
+        ]
+    )
 
-        await update.message.reply_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Volver",
+                callback_data=f"cleanpl:{token}:back",
+            )
+        ]
+    )
 
-    remaining = len(problematic) - MAX_CLEANUP_PLAYLISTS_SHOWN
-
-    if remaining > 0:
-        await update.message.reply_text(
-            f"…y hay {remaining} playlists más. "
-            "Limpia estas y vuelve a ejecutar /limpiar."
-        )
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 async def cleanup_callback(update, context):
     query = update.callback_query
-    _, token, mode = query.data.split(":")
+    parts = query.data.split(":")
 
-    store = context.user_data.get(
+    token = parts[1]
+    action = parts[2]
+    arg = parts[3] if len(parts) > 3 else None
+
+    states = context.user_data.get(
         "cleanup_playlists",
         {},
     )
 
-    report = store.get(token)
+    state = states.get(token)
 
-    if not report:
+    if not state:
         await query.answer(
             "Lista caducada; ejecuta /limpiar otra vez."
         )
 
         return
 
-    result = await api_post(
-        "/playlists/prune",
-        {
-            "name": report["name"],
-            "delete_if_empty": mode == "delete",
-        },
-    )
+    reports = state["reports"]
 
-    store.pop(token, None)
-
-    if result.get("status") == "deleted":
-        text = (
-            f"🗑 Playlist '{result['name']}' eliminada "
-            "(no le quedaba ningún fichero)."
+    if action == "page":
+        await query.answer()
+        await render_cleanup_page(
+            query=query,
+            update=None,
+            context=context,
+            token=token,
+            offset=int(arg),
         )
 
-    elif result.get("status") == "pruned":
-        text = (
-            f"🧹 '{result['name']}': {result['removed']} entradas "
-            f"muertas eliminadas, quedan {result['kept']}."
+        return
+
+    if action == "item":
+        await query.answer()
+        await render_cleanup_detail(
+            query,
+            context,
+            token,
+            int(arg),
         )
 
-    elif result.get("status") == "clean":
-        text = "No había nada que limpiar."
+        return
 
-    else:
-        text = "⚠️ No he podido limpiar la playlist."
+    if action == "back":
+        await query.answer()
+        await render_cleanup_page(
+            query=query,
+            update=None,
+            context=context,
+            token=token,
+            offset=0,
+        )
+
+        return
+
+    index = int(arg)
+    report = reports[index]
+
+    if action == "delconfirm":
+        await query.answer()
+        await query.edit_message_text(
+            f"⚠️ ¿Borrar la playlist '{report['name']}'?\n\n"
+            "Se elimina SOLO el fichero .m3u; "
+            "las canciones siguen en tu biblioteca.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🗑 Sí, borrarla",
+                            callback_data=f"cleanpl:{token}:delete:{index}",
+                        ),
+                        InlineKeyboardButton(
+                            "No, volver",
+                            callback_data=f"cleanpl:{token}:item:{index}",
+                        ),
+                    ]
+                ]
+            ),
+        )
+
+        return
+
+    if action == "delete":
+        result = await api_post(
+            "/playlists/delete",
+            {"name": report["name"]},
+        )
+
+        await query.answer(
+            "🗑 Borrada" if result.get("status") == "deleted"
+            else "⚠️ No he podido borrarla"
+        )
+
+        if result.get("status") == "deleted":
+            reports.pop(index)
+
+        await render_cleanup_page(
+            query=query,
+            update=None,
+            context=context,
+            token=token,
+            offset=0,
+        )
+
+        return
+
+    if action == "prune":
+        result = await api_post(
+            "/playlists/prune",
+            {
+                "name": report["name"],
+                "delete_if_empty": False,
+            },
+        )
+
+        await query.answer()
+
+        if result.get("status") == "pruned":
+            text = (
+                f"🧹 '{result['name']}': {result['removed']} entradas "
+                f"muertas eliminadas, quedan {result['kept']}.\n\n"
+                "♻️ Rescan en Navidrome para verlo reflejado."
+            )
+
+        elif result.get("status") == "clean":
+            text = "No había nada que limpiar."
+
+        else:
+            text = "⚠️ No he podido podar la playlist."
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Volver",
+                            callback_data=f"cleanpl:{token}:item:{index}",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return
 
     await query.answer()
-    await query.edit_message_text(text)
 
 def format_duration(
     length: int | None,
@@ -7451,7 +7661,7 @@ async def _post_init_commands(
             ),
             BotCommand(
                 "limpiar",
-                "Limpiar entradas muertas de playlists",
+                "Gestionar y borrar playlists",
             ),
         ]
     )

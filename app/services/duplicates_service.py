@@ -448,6 +448,35 @@ def playlist_orphans_report() -> list:
     return reports
 
 
+def delete_playlist(
+    name: str,
+) -> dict:
+    playlist_file = _find_playlist_file(name)
+
+    if playlist_file is None:
+        return {
+            "status": "not_found",
+        }
+
+    try:
+        playlist_file.unlink()
+
+    except OSError as error:
+        return {
+            "status": "error",
+            "error": str(error),
+        }
+
+    logger.warning(
+        f"[PLAYLIST DELETED] file={str(playlist_file)!r}"
+    )
+
+    return {
+        "status": "deleted",
+        "name": playlist_file.stem,
+    }
+
+
 def prune_playlist(
     name: str,
     delete_if_empty: bool = False,

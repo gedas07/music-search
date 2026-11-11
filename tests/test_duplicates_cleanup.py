@@ -58,6 +58,16 @@ class DuplicatesCleanupTests(unittest.TestCase):
    self.assertEqual(reports[0]['name'],'Otra')
    self.assertEqual(reports[0]['missing'],1)
 
+ def test_delete_playlist_removes_m3u_anywhere_in_library(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);library=root/'library';library.mkdir()
+   nested=library/'otra carpeta';nested.mkdir()
+   target=nested/'Mix.m3u';target.write_text('../a.flac\n',encoding='utf-8')
+   with _RootsPatch(root):
+    result=dups.delete_playlist('Mix')
+   self.assertEqual(result['status'],'deleted')
+   self.assertFalse(target.exists())
+
  def test_prune_deletes_playlist_when_empty_and_requested(self):
   with tempfile.TemporaryDirectory() as temp:
    root=Path(temp);library=root/'library';library.mkdir();playlists=library/'PLAYLISTS';playlists.mkdir()

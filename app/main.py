@@ -30,6 +30,7 @@ from .services.album_service import (
 )
 from datetime import datetime
 from .services.input_service import resolve_track_query
+from .services.organizer_service import start_organizer
 from .services.artist_album_service import get_artist_albums
 from app.services.exploratory_search_service import (
     search_options,
@@ -72,6 +73,7 @@ def startup_event():
     load_history()
     start_worker()
     start_monitor()
+    start_organizer()
 
 @app.get("/")
 def root():

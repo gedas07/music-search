@@ -213,79 +213,15 @@ def move_single_download(
     artist: str,
     track: str,
 ) -> Path:
-    extension = local_file.suffix.casefold()
-
-    if extension in (".flac", ".wav", ".alac", ".aiff"):
-        destination_dir = LOSSLESS_ROOT
-
-    elif extension == ".mp3":
-        destination_dir = NORMAL_ROOT
-
-    else:
-        # Por ahora, si aparece otro formato,
-        # lo dejamos en normal.
-        destination_dir = NORMAL_ROOT
-
-    destination_dir.mkdir(
-        parents=True,
-        exist_ok=True,
+    from .services.organizer_service import (
+        organize_file,
     )
 
-    artist_name = sanitize_filename_part(
-        artist
+    return organize_file(
+        local_file,
+        fallback_artist=artist,
+        fallback_track=track,
     )
-
-    track_name = sanitize_filename_part(
-        track
-    )
-
-    clean_filename = (
-        f"{artist_name} - {track_name}"
-        f"{extension}"
-    )
-
-    destination = (
-        destination_dir
-        / clean_filename
-    )
-
-    source_dir = local_file.parent
-
-    if destination.exists():
-        print(
-            f"[SINGLE MOVE] "
-            f"destination already exists | "
-            f"destination={str(destination)!r}",
-            flush=True,
-        )
-
-        # No borramos el archivo existente.
-        # Eliminamos la descarga recién llegada
-        # para evitar duplicados.
-        local_file.unlink()
-
-        cleanup_empty_directories(
-            source_dir
-        )
-
-        return destination
-
-    local_file.rename(
-        destination
-    )
-
-    cleanup_empty_directories(
-        source_dir
-    )
-
-    print(
-        f"[SINGLE MOVE] "
-        f"source={str(local_file)!r} | "
-        f"destination={str(destination)!r}",
-        flush=True,
-    )
-
-    return destination
 
 
 def move_to_playlist_pending(

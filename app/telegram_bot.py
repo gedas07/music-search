@@ -6923,9 +6923,26 @@ async def finalize_playlist_with_name(
     )
 
     if "/lossless/" in normalized_destination:
-        m3u_filename = (
-            f"{saved_name} - lossless.m3u"
+        # Sufijo solo si coexiste la variante
+        # normal (MP3) de la misma playlist.
+        normal_variant = normalized_destination.replace(
+            "/lossless/",
+            "/normal/",
+            1,
         )
+
+        if os.path.exists(
+            normal_variant
+        ):
+            m3u_filename = (
+                f"{saved_name} - lossless.m3u"
+            )
+
+        else:
+            m3u_filename = (
+                f"{saved_name}.m3u"
+            )
+
     else:
         m3u_filename = (
             f"{saved_name}.m3u"

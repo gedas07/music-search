@@ -34,8 +34,18 @@ class AlbumPlaylistLosslessTests(unittest.TestCase):
     target=monitor.finalize_playlist_folder('sample','Album')
     self.assertEqual(target,root/'lossless/playlists/Album')
     self.assertEqual([p.name for p in sorted(target.iterdir())],names)
-    lines=(root/'m3u/Album - lossless.m3u').read_text().splitlines()
+    lines=(root/'m3u/Album.m3u').read_text().splitlines()
     self.assertEqual([Path(line).name for line in lines[1:]],names)
+
+  def test_lossless_m3u_suffix_only_when_normal_variant_coexists(self):
+   with tempfile.TemporaryDirectory() as temp:
+    root=Path(temp);pending=root/'pending';source=pending/'sample';source.mkdir(parents=True)
+    (source/'01.flac').write_bytes(b'a')
+    normal_dir=root/'normal/playlists/Album';normal_dir.mkdir(parents=True)
+    with patch.multiple(monitor,DOWNLOADS_ROOT=root,PLAYLISTS_PENDING_ROOT=pending,LOSSLESS_ROOT=root/'lossless',NORMAL_ROOT=root/'normal',PLAYLIST_FILES_ROOT=root/'m3u'):
+     monitor.finalize_playlist_folder('sample','Album')
+     self.assertTrue((root/'m3u/Album - lossless.m3u').exists())
+     self.assertFalse((root/'m3u/Album.m3u').exists())
 
  def test_m3u_import_strips_all_lossless_extensions(self):
   for ext in ('.flac','.wav','.alac','.aiff','.ALAC'):

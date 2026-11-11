@@ -431,9 +431,27 @@ def update_playlist_m3u(
             and relative_destination.parts
             and relative_destination.parts[0] == "lossless"
         ):
-            m3u_filename = (
-                f"{playlist_name} - lossless.m3u"
+            # Solo añadimos el sufijo si coexiste
+            # una variante normal (MP3) de la misma
+            # playlist; así el nombre habitual queda
+            # limpio sin riesgo de colisión.
+            normal_variant = Path(
+                "normal",
+                *relative_destination.parts[1:],
             )
+
+            if (
+                DOWNLOADS_ROOT
+                / normal_variant
+            ).exists():
+                m3u_filename = (
+                    f"{playlist_name} - lossless.m3u"
+                )
+
+            else:
+                m3u_filename = (
+                    f"{playlist_name}.m3u"
+                )
 
         else:
             m3u_filename = (

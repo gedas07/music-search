@@ -9,6 +9,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    BotCommand,
 )
 from telegram.ext import (
     Application,
@@ -7429,8 +7430,37 @@ async def playlist_final_custom_callback(
         )
     )   
 
+async def _post_init_commands(
+    application,
+):
+    # Registra los comandos para que Telegram
+    # los muestre en el menú al pulsar "/".
+    await application.bot.set_my_commands(
+        [
+            BotCommand(
+                "start",
+                "Estado del bot y ayuda",
+            ),
+            BotCommand(
+                "album",
+                "Buscar un álbum completo",
+            ),
+            BotCommand(
+                "duplicados",
+                "Buscar y borrar canciones duplicadas",
+            ),
+            BotCommand(
+                "limpiar",
+                "Limpiar entradas muertas de playlists",
+            ),
+        ]
+    )
+
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(
+        _post_init_commands
+    ).build()
 
     app.add_handler(
         TypeHandler(

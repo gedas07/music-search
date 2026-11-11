@@ -46,6 +46,18 @@ class DuplicatesCleanupTests(unittest.TestCase):
    self.assertIn('../keep.flac',content)
    self.assertNotIn('gone.flac',content)
 
+ def test_orphan_report_scans_whole_library(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);library=root/'library';library.mkdir()
+   nested=library/'listas antiguas';nested.mkdir()
+   good=library/'ok.flac';good.write_bytes(b'a')
+   (nested/'Otra.m3u').write_text('../ok.flac\n../missing.flac\n',encoding='utf-8')
+   with _RootsPatch(root):
+    reports=dups.playlist_orphans_report()
+   self.assertEqual(len(reports),1)
+   self.assertEqual(reports[0]['name'],'Otra')
+   self.assertEqual(reports[0]['missing'],1)
+
  def test_prune_deletes_playlist_when_empty_and_requested(self):
   with tempfile.TemporaryDirectory() as temp:
    root=Path(temp);library=root/'library';library.mkdir();playlists=library/'PLAYLISTS';playlists.mkdir()
@@ -64,7 +76,6 @@ class _RootsPatch:
     dups,
     LIBRARY_ROOT=library,
     DOWNLOADS_ROOT=root/'downloads',
-    PLAYLISTS_ROOT=library/'PLAYLISTS',
    ),
    mock.patch.multiple(
     manual,

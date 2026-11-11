@@ -2,6 +2,7 @@ from pathlib import Path
 import logging
 import re
 
+import mutagen
 from rapidfuzz import fuzz
 
 from ..similarity_scoring import (
@@ -11,8 +12,6 @@ from .manual_playlist_service import (
     AUDIO_EXTENSIONS,
     DOWNLOADS_ROOT,
     LIBRARY_ROOT,
-    PLAYLISTS_ROOT,
-    find_playlist,
     m3u_entry_to_local_path,
 )
 
@@ -26,8 +25,13 @@ LOSSLESS_EXTENSIONS = {
     ".aiff",
 }
 
-MIN_ARTIST_SIMILARITY = 90
-MIN_TITLE_SIMILARITY = 92
+M3U_EXTENSIONS = {
+    ".m3u",
+    ".m3u8",
+}
+
+MIN_ARTIST_SIMILARITY = 85
+MIN_TITLE_SIMILARITY = 88
 
 
 def format_size(
@@ -46,6 +50,19 @@ def format_size(
     return f"{size} B"
 
 
+def _is_playlists_dir(
+    path: Path,
+) -> bool:
+
+    # Cualquier carpeta llamada PLAYLISTS dentro
+    # de la biblioteca es zona de .m3u, no de
+    # audio.
+    return any(
+        parent.name.casefold() == "playlists"
+        for parent in path.parents
+    )
+
+
 def _iter_audio_files():
     for path in sorted(
         LIBRARY_ROOT.rglob("*")
@@ -56,13 +73,34 @@ def _iter_audio_files():
         if path.suffix.casefold() not in AUDIO_EXTENSIONS:
             continue
 
-        # La carpeta de playlists solo
-        # contiene ficheros .m3u, pero la
-        # excluimos por si acaso.
-        if PLAYLISTS_ROOT in path.parents:
+        if _is_playlists_dir(path):
             continue
 
         yield path
+
+
+def _tags_of(
+    path: Path,
+):
+    try:
+        audio = mutagen.File(
+            str(path),
+            easy=True,
+        )
+
+        if audio is None or audio.info is None:
+            return None, None
+
+        artist = audio.get("artist")
+        title = audio.get("title")
+
+        artist = artist[0].strip() if artist else None
+        title = title[0].strip() if title else None
+
+        return artist, title
+
+    except Exception:
+        return None, None
 
 
 def _parse_artist_title(
@@ -95,14 +133,33 @@ def _parse_artist_title(
     )
 
 
+def _identify(
+    path: Path,
+):
+    # La verdad está en los tags ID3; el
+    # nombre del fichero es el plan B.
+    artist, title = _tags_of(path)
+
+    if artist and title:
+        return artist, title
+
+    fallback_artist, fallback_title = (
+        _parse_artist_title(path)
+    )
+
+    return (
+        artist or fallback_artist,
+        title or fallback_title,
+    )
+
+
 def _quality_rank(
     path: Path,
 ) -> tuple:
 
     # Ordenamos por (lossless primero, luego tamaño).
-    # Evitamos leer metadatos de cada fichero: con
-    # bibliotecas grandes, hacer stat es lo único
-    # que permite un escaneo rápido.
+    # Es lo que permite un escaneo rápido sin
+    # depender del bitrate exacto.
     is_lossless = (
         path.suffix.casefold() in LOSSLESS_EXTENSIONS
     )
@@ -131,89 +188,106 @@ def _entry_of(
     }
 
 
+def _similar(
+    left: dict,
+    right: dict,
+) -> bool:
+
+    if fuzz.token_sort_ratio(
+        left["artist_key"],
+        right["artist_key"],
+    ) < MIN_ARTIST_SIMILARITY:
+        return False
+
+    if fuzz.token_set_ratio(
+        left["title_key"],
+        right["title_key"],
+    ) < MIN_TITLE_SIMILARITY:
+        return False
+
+    return True
+
+
 def find_duplicates() -> list:
     entries = []
 
     for path in _iter_audio_files():
-        artist, title = _parse_artist_title(path)
+        artist, title = _identify(path)
+
+        artist_key = normalize_text(artist)
+        title_key = normalize_text(title)
+
+        if not artist_key or not title_key:
+            continue
 
         entries.append(
             {
                 "path": path,
                 "artist": artist,
                 "title": title,
+                "artist_key": artist_key,
+                "title_key": title_key,
+                "block": artist_key[:3],
             }
         )
+
+    # Agrupamos por bloques del artista para no
+    # comparar todo contra todo (las bibliotecas
+    # grandes harían O(n²) inviable).
+    blocks = {}
+
+    for entry in entries:
+        blocks.setdefault(
+            entry["block"],
+            [],
+        ).append(entry)
 
     groups = []
-    used = set()
 
-    for index, entry in enumerate(entries):
-        if index in used:
-            continue
+    for block_entries in blocks.values():
+        local_groups = []
 
-        member_indexes = [index]
+        for entry in block_entries:
+            target = None
 
-        artist_key = normalize_text(
-            entry["artist"]
-        )
+            for candidate in local_groups:
+                if any(
+                    _similar(entry, member)
+                    for member in candidate
+                ):
+                    target = candidate
 
-        title_key = normalize_text(
-            entry["title"]
-        )
+                    break
 
-        for other in range(
-            index + 1,
-            len(entries),
-        ):
-            if other in used:
+            if target is None:
+                target = []
+                local_groups.append(target)
+
+            target.append(entry)
+
+        for local_group in local_groups:
+            if len(local_group) < 2:
                 continue
 
-            other_entry = entries[other]
-
-            artist_score = fuzz.token_sort_ratio(
-                artist_key,
-                normalize_text(other_entry["artist"]),
+            members = sorted(
+                local_group,
+                key=lambda item: _quality_rank(item["path"]),
+                reverse=True,
             )
 
-            if artist_score < MIN_ARTIST_SIMILARITY:
-                continue
-
-            title_score = fuzz.token_set_ratio(
-                title_key,
-                normalize_text(other_entry["title"]),
+            groups.append(
+                {
+                    "artist": members[0]["artist"],
+                    "title": members[0]["title"],
+                    "files": [
+                        _entry_of(
+                            member["path"],
+                            position == 0,
+                        )
+                        for position, member in enumerate(members)
+                    ],
+                }
             )
-
-            if title_score < MIN_TITLE_SIMILARITY:
-                continue
-
-            member_indexes.append(other)
-            used.add(other)
-
-        if len(member_indexes) < 2:
-            continue
-
-        used.add(index)
-
-        members = sorted(
-            (entries[i] for i in member_indexes),
-            key=lambda item: _quality_rank(item["path"]),
-            reverse=True,
-        )
-
-        groups.append(
-            {
-                "artist": entry["artist"],
-                "title": entry["title"],
-                "files": [
-                    _entry_of(
-                        member["path"],
-                        position == 0,
-                    )
-                    for position, member in enumerate(members)
-                ],
-            }
-        )
 
     return groups
 
@@ -290,18 +364,45 @@ def delete_paths(
     return results
 
 
+def _iter_playlist_files():
+    # Navidrome importa los .m3u de CUALQUIER
+    # carpeta de la biblioteca, no solo de
+    # PLAYLISTS; escaneamos igual que él.
+    for path in sorted(
+        LIBRARY_ROOT.rglob("*")
+    ):
+        if not path.is_file():
+            continue
+
+        if path.suffix.casefold() not in M3U_EXTENSIONS:
+            continue
+
+        if path.name.endswith(".tmp"):
+            continue
+
+        yield path
+
+
+def _find_playlist_file(
+    name: str,
+) -> Path | None:
+
+    requested = name.casefold().strip()
+
+    for path in _iter_playlist_files():
+        if (
+            path.stem.casefold().strip()
+            == requested
+        ):
+            return path
+
+    return None
+
+
 def playlist_orphans_report() -> list:
     reports = []
 
-    for playlist_file in sorted(
-        PLAYLISTS_ROOT.iterdir()
-    ):
-        if not playlist_file.is_file():
-            continue
-
-        if playlist_file.suffix.casefold() not in (".m3u", ".m3u8"):
-            continue
-
+    for playlist_file in _iter_playlist_files():
         try:
             lines = playlist_file.read_text(
                 encoding="utf-8"
@@ -351,7 +452,7 @@ def prune_playlist(
     name: str,
     delete_if_empty: bool = False,
 ) -> dict:
-    playlist_file = find_playlist(name)
+    playlist_file = _find_playlist_file(name)
 
     if playlist_file is None:
         return {

@@ -45,6 +45,16 @@ from app.services.manual_playlist_service import (
     find_playlists_containing_path,
     get_audio_directory_stats,
 )
+from app.services.duplicates_service import (
+    delete_paths,
+    find_duplicates,
+    playlist_orphans_report,
+    prune_playlist,
+)
+from .api_models import (
+    DuplicateDeleteRequest,
+    PruneRequest,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -382,6 +392,35 @@ def manual_playlist_add_tracks(
         playlist_name=playlist,
         local_paths=local_paths,
         create_if_missing=create_if_missing,
+    )
+
+@app.get("/duplicates")
+def get_duplicates():
+
+    return find_duplicates()
+
+@app.post("/duplicates/delete")
+def post_duplicates_delete(
+    request: DuplicateDeleteRequest,
+):
+
+    return delete_paths(
+        paths=request.paths,
+    )
+
+@app.get("/playlists/orphans")
+def get_playlist_orphans():
+
+    return playlist_orphans_report()
+
+@app.post("/playlists/prune")
+def post_playlist_prune(
+    request: PruneRequest,
+):
+
+    return prune_playlist(
+        name=request.name,
+        delete_if_empty=request.delete_if_empty,
     )
 
 @app.delete("/downloads/{job_id}")

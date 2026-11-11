@@ -20,3 +20,12 @@ class QueueResponse(BaseModel):
     position: int
     track: TrackResponse
     source: SourceResponse
+
+
+class DuplicateDeleteRequest(BaseModel):
+    paths: list[str]
+
+
+class PruneRequest(BaseModel):
+    name: str
+    delete_if_empty: bool = False

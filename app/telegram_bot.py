@@ -293,6 +293,7 @@ async def api_post(
 async def api_get(
     path: str,
     retries: int = 3,
+    timeout: int = 15,
 ):
     def request():
         last_error = None
@@ -301,7 +302,7 @@ async def api_get(
             try:
                 response = requests.get(
                     f"{API_URL}{path}",
-                    timeout=15,
+                    timeout=timeout,
                 )
 
                 response.raise_for_status()
@@ -324,8 +325,324 @@ async def start(
     await update.message.reply_text(
         "🎵 Music bot listo.\n\n"
         "Escribe una canción, por ejemplo:\n"
-        "firestarter - prodigy"
+        "firestarter - prodigy\n\n"
+        "Utilidades:\n"
+        "/duplicados — busca canciones duplicadas y ofrece borrarlas\n"
+        "/limpiar — limpia entradas muertas de tus playlists"
     )
+
+
+def _format_bytes(
+    size: int,
+) -> str:
+
+    if size >= 1024 ** 3:
+        return f"{size / (1024 ** 3):.2f} GB"
+
+    if size >= 1024 ** 2:
+        return f"{size / (1024 ** 2):.1f} MB"
+
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+
+    return f"{size} B"
+
+
+MAX_DUPLICATE_GROUPS_SHOWN = 15
+MAX_CLEANUP_PLAYLISTS_SHOWN = 15
+
+
+async def duplicates_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await update.message.reply_text(
+        "🔎 Escaneando la biblioteca en busca de duplicados…"
+    )
+
+    try:
+        groups = await api_get(
+            "/duplicates",
+            retries=1,
+            timeout=180,
+        )
+
+    except Exception:
+        await update.message.reply_text(
+            "❌ No he podido analizar la biblioteca."
+        )
+
+        return
+
+    if not groups:
+        await update.message.reply_text(
+            "✅ No he encontrado duplicados."
+        )
+
+        return
+
+    store = context.user_data.setdefault(
+        "duplicate_groups",
+        {},
+    )
+
+    for group in groups[:MAX_DUPLICATE_GROUPS_SHOWN]:
+        token = secrets.token_hex(4)
+        store[token] = group
+
+        files = group["files"]
+
+        lines = [
+            f"🔁 {group['artist']} – {group['title']}",
+        ]
+
+        for position, item in enumerate(files):
+            mark = "💎" if item["is_best"] else "  "
+
+            lines.append(
+                f"{mark} {position + 1}. "
+                f"{item['name']} · {item['size_text']} · "
+                f"{item['extension'].upper()}"
+            )
+
+        freed = sum(
+            item["size"]
+            for item in files[1:]
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"🗑 {position + 1}",
+                    callback_data=f"dupdel:{token}:{position}",
+                )
+                for position in range(len(files))
+            ],
+            [
+                InlineKeyboardButton(
+                    f"🧹 Borrar todo menos el mejor ({_format_bytes(freed)})",
+                    callback_data=f"dupauto:{token}",
+                )
+            ],
+        ]
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    remaining = len(groups) - MAX_DUPLICATE_GROUPS_SHOWN
+
+    if remaining > 0:
+        await update.message.reply_text(
+            f"…y hay {remaining} grupos más. "
+            "Limpia estos y vuelve a ejecutar /duplicados."
+        )
+
+
+async def duplicates_callback(update, context):
+    query = update.callback_query
+    kind, token, *rest = query.data.split(":")
+
+    store = context.user_data.get(
+        "duplicate_groups",
+        {},
+    )
+
+    group = store.get(token)
+
+    if not group:
+        await query.answer(
+            "Lista caducada; ejecuta /duplicados otra vez."
+        )
+
+        return
+
+    if kind == "skip":
+        store.pop(token, None)
+        await query.answer()
+        await query.edit_message_text("Dejado como estaba.")
+
+        return
+
+    if kind == "del":
+        index = int(rest[0])
+        targets = [
+            group["files"][index]["path"],
+        ]
+
+    else:
+        targets = [
+            item["path"]
+            for item in group["files"][1:]
+        ]
+
+    result = await api_post(
+        "/duplicates/delete",
+        {"paths": targets},
+    )
+
+    deleted = [
+        item
+        for item in result
+        if item.get("status") == "deleted"
+    ]
+
+    freed = sum(
+        item.get("size", 0)
+        for item in deleted
+    )
+
+    store.pop(token, None)
+
+    await query.answer(
+        "🗑 Borrado" if deleted else "⚠️ Nada borrado"
+    )
+
+    await query.edit_message_text(
+        f"🗑 {len(deleted)} fichero(s) borrado(s) de "
+        f"'{group['artist']} – {group['title']}'\n"
+        f"💾 Liberados {_format_bytes(freed)}\n\n"
+        "♻️ Haz un rescan en Navidrome para verlo reflejado."
+    )
+
+
+async def cleanup_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await update.message.reply_text(
+        "🔎 Revisando tus playlists en busca de entradas muertas…"
+    )
+
+    try:
+        reports = await api_get(
+            "/playlists/orphans",
+            retries=1,
+            timeout=60,
+        )
+
+    except Exception:
+        await update.message.reply_text(
+            "❌ No he podido revisar las playlists."
+        )
+
+        return
+
+    problematic = [
+        report
+        for report in reports
+        if report.get("missing")
+    ]
+
+    if not problematic:
+        await update.message.reply_text(
+            "✅ Todas tus playlists están sanas."
+        )
+
+        return
+
+    store = context.user_data.setdefault(
+        "cleanup_playlists",
+        {},
+    )
+
+    for report in problematic[:MAX_CLEANUP_PLAYLISTS_SHOWN]:
+        token = secrets.token_hex(4)
+        store[token] = report
+
+        lines = [
+            f"🎵 {report['name']} — "
+            f"{report['missing']}/{report['total']} entradas sin fichero",
+        ]
+
+        for name in report["missing_names"][:8]:
+            lines.append(f"   ❌ {name}")
+
+        if report["missing_names"][8:]:
+            lines.append(f"   …y {len(report['missing_names']) - 8} más")
+
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "🧹 Quitar entradas muertas",
+                    callback_data=f"cleanpl:{token}:prune",
+                )
+            ]
+        ]
+
+        if report["total"] > 0 and report["missing"] == report["total"]:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        "🗑 Borrar la playlist entera",
+                        callback_data=f"cleanpl:{token}:delete",
+                    )
+                ]
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    remaining = len(problematic) - MAX_CLEANUP_PLAYLISTS_SHOWN
+
+    if remaining > 0:
+        await update.message.reply_text(
+            f"…y hay {remaining} playlists más. "
+            "Limpia estas y vuelve a ejecutar /limpiar."
+        )
+
+
+async def cleanup_callback(update, context):
+    query = update.callback_query
+    _, token, mode = query.data.split(":")
+
+    store = context.user_data.get(
+        "cleanup_playlists",
+        {},
+    )
+
+    report = store.get(token)
+
+    if not report:
+        await query.answer(
+            "Lista caducada; ejecuta /limpiar otra vez."
+        )
+
+        return
+
+    result = await api_post(
+        "/playlists/prune",
+        {
+            "name": report["name"],
+            "delete_if_empty": mode == "delete",
+        },
+    )
+
+    store.pop(token, None)
+
+    if result.get("status") == "deleted":
+        text = (
+            f"🗑 Playlist '{result['name']}' eliminada "
+            "(no le quedaba ningún fichero)."
+        )
+
+    elif result.get("status") == "pruned":
+        text = (
+            f"🧹 '{result['name']}': {result['removed']} entradas "
+            f"muertas eliminadas, quedan {result['kept']}."
+        )
+
+    elif result.get("status") == "clean":
+        text = "No había nada que limpiar."
+
+    else:
+        text = "⚠️ No he podido limpiar la playlist."
+
+    await query.answer()
+    await query.edit_message_text(text)
 
 def format_duration(
     length: int | None,
@@ -7131,6 +7448,34 @@ def main():
         CommandHandler(
             "start",
             start,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "duplicados",
+            duplicates_command,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "limpiar",
+            cleanup_command,
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            duplicates_callback,
+            pattern=r"^dup(?:del|auto|skip):",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            cleanup_callback,
+            pattern=r"^cleanpl:",
         )
     )
 
